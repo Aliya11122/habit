@@ -3,7 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes, viewport-fit=cover">
-    <title>习惯工坊 · 清晰周月视图</title>
+    <title>习惯工坊 · 可排序周月视图</title>
+    <!-- 引入 SortableJS 轻量库，用于优雅拖拽排序 -->
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -165,6 +167,37 @@
             background: white;
             z-index: 2;
             padding-left: 8px;
+        }
+
+        /* 拖拽手柄样式 */
+        .drag-handle {
+            cursor: grab;
+            margin-right: 8px;
+            font-size: 1.1rem;
+            opacity: 0.6;
+            touch-action: none;
+            display: inline-block;
+            vertical-align: middle;
+        }
+        .drag-handle:active {
+            cursor: grabbing;
+        }
+        /* 习惯行容器支持拖拽 */
+        .habit-sort-row {
+            transition: background 0.1s ease;
+        }
+        .habit-sort-row.sortable-drag {
+            opacity: 0.4;
+            background: #eef2f9;
+        }
+
+        /* 待办容器支持拖拽 */
+        .todo-sort-item {
+            transition: background 0.1s ease;
+        }
+        .todo-sort-item.sortable-drag {
+            opacity: 0.4;
+            background: #eef2f9;
         }
 
         .check-btn {
@@ -361,16 +394,21 @@
         button {
             touch-action: manipulation;
         }
+        /* 拖拽相关 */
+        .sortable-ghost {
+            opacity: 0.4;
+            background: #cbdbe6;
+        }
     </style>
 </head>
 <body>
 <div class="app">
     <!-- 头部 -->
     <div class="card header-card">
-        <div class="header-title">📊 习惯工坊</div>
+        <div class="header-title">📊 习惯工坊 · 可排序</div>
         <div class="date-row">
             <span class="today-chip" id="displayDate"></span>
-            <span style="font-size:0.7rem;">✔ 周/月视图清晰打卡</span>
+            <span style="font-size:0.7rem;">✔ 长按拖动 ☰ 调整顺序</span>
         </div>
     </div>
 
@@ -385,7 +423,7 @@
             <input type="datetime-local" id="todoDeadline" class="datetime-mobile">
             <button id="addBtn" class="add-btn">+</button>
         </div>
-        <div style="font-size:0.7rem; margin-top: 8px;">⏰ 待办可设截止时间 | 周月视图点击○/✓打卡</div>
+        <div style="font-size:0.7rem; margin-top: 8px;">⏰ 待办可设截止时间 | 周月视图点击○/✓打卡 | 拖拽手柄调整顺序</div>
     </div>
 
     <!-- 标签 -->
@@ -400,7 +438,7 @@
 
     <!-- 待办清单 -->
     <div class="card">
-        <div style="font-weight:600; margin-bottom:12px;">📌 待办清单 · 截止倒计时</div>
+        <div style="font-weight:600; margin-bottom:12px;">📌 待办清单 · 截止倒计时 <span style="font-size:0.7rem;">(☰ 长按拖动排序)</span></div>
         <div id="todoListContainer"></div>
     </div>
 
@@ -413,9 +451,24 @@
 
 <script>
     // ---------- 存储与数据 ----------
-    const STORAGE_KEY = 'HabitMatrixMobile';
-    let habits = [];      // { id, name, history: {} }
-    let todos = [];
+    const STORAGE_KEY = 'HabitMatrixMobile_Sortable';
+    let habits = [];      // 每个习惯 { id, name, history, order }
+    let todos = [];       // 每个待办 { id, title, completed, deadline, createdAt, order }
+    
+    // 为了排序，额外增加 order 字段，初始化时若无则按现有顺序补充
+    function ensureOrder() {
+        // 为 habits 补充 order
+        if (habits.length && habits[0].order === undefined) {
+            habits.forEach((h, idx) => { h.order = idx; });
+        }
+        // 为 todos 补充 order
+        if (todos.length && todos[0].order === undefined) {
+            todos.forEach((t, idx) => { t.order = idx; });
+        }
+        // 排序依据 order 升序
+        habits.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
+        todos.sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
+    }
 
     let currentTab = 'week';
     let currentWeekOffset = 0;
@@ -471,13 +524,15 @@
     // 增删
     function addHabit(name) {
         if (!name.trim()) return;
-        habits.push({ id: Date.now() + '-' + Math.random(), name: name.trim(), history: {} });
+        const maxOrder = habits.length > 0 ? Math.max(...habits.map(h => h.order ?? 0)) : -1;
+        habits.push({ id: Date.now() + '-' + Math.random(), name: name.trim(), history: {}, order: maxOrder + 1 });
         saveToLocal();
         renderAll();
     }
     function addTodo(title, deadlineISO = null) {
         if (!title.trim()) return;
-        todos.push({ id: Date.now(), title: title.trim(), completed: false, deadline: deadlineISO || null, createdAt: Date.now() });
+        const maxOrder = todos.length > 0 ? Math.max(...todos.map(t => t.order ?? 0)) : -1;
+        todos.push({ id: Date.now(), title: title.trim(), completed: false, deadline: deadlineISO || null, createdAt: Date.now(), order: maxOrder + 1 });
         saveToLocal();
         renderAll();
     }
@@ -485,17 +540,73 @@
         const todo = todos.find(t => t.id == todoId);
         if (todo) { todo.completed = !todo.completed; saveToLocal(); renderAll(); }
     }
-    function deleteTodo(todoId) { todos = todos.filter(t => t.id != todoId); saveToLocal(); renderAll(); }
+    function deleteTodo(todoId) { 
+        todos = todos.filter(t => t.id != todoId); 
+        // 重新整理 order 连续
+        todos.forEach((t, idx) => { t.order = idx; });
+        saveToLocal(); 
+        renderAll(); 
+    }
     function deleteHabit(habitId) {
         if (confirm("删除习惯会丢失历史")) {
             habits = habits.filter(h => h.id != habitId);
+            habits.forEach((h, idx) => { h.order = idx; });
             if (selectedHabitIdForWeek === habitId) selectedHabitIdForWeek = 'all';
             if (selectedHabitIdForMonth === habitId) selectedHabitIdForMonth = 'all';
             saveToLocal(); renderAll();
         }
     }
 
-    // ---------- 周视图 (矩阵: 习惯 x 日期) ----------
+    // ---------- 排序更新函数 ----------
+    function updateHabitsOrderFromDrag() {
+        // 在周视图或月视图中，通过 DOM 顺序更新 habits 数组的 order
+        const rows = document.querySelectorAll('.habit-sort-row');
+        if (rows.length === 0) return;
+        const newOrderMap = new Map();
+        rows.forEach((row, newIndex) => {
+            const habitId = row.getAttribute('data-habit-id');
+            if (habitId) newOrderMap.set(habitId, newIndex);
+        });
+        let changed = false;
+        habits.forEach(habit => {
+            const newOrd = newOrderMap.get(habit.id);
+            if (newOrd !== undefined && habit.order !== newOrd) {
+                habit.order = newOrd;
+                changed = true;
+            }
+        });
+        if (changed) {
+            habits.sort((a,b) => a.order - b.order);
+            saveToLocal();
+            // 重新刷新当前视图以保持一致性
+            renderAll();
+        }
+    }
+
+    function updateTodosOrderFromDrag() {
+        const todoItems = document.querySelectorAll('.todo-sort-item');
+        if (todoItems.length === 0) return;
+        const newOrderMap = new Map();
+        todoItems.forEach((el, newIdx) => {
+            const todoId = el.getAttribute('data-todo-id');
+            if (todoId) newOrderMap.set(Number(todoId), newIdx);
+        });
+        let changed = false;
+        todos.forEach(todo => {
+            const newOrd = newOrderMap.get(todo.id);
+            if (newOrd !== undefined && todo.order !== newOrd) {
+                todo.order = newOrd;
+                changed = true;
+            }
+        });
+        if (changed) {
+            todos.sort((a,b) => a.order - b.order);
+            saveToLocal();
+            renderAll();
+        }
+    }
+
+    // ---------- 周视图 (矩阵: 习惯 x 日期) 支持拖拽排序习惯行 ----------
     function renderWeekMatrix() {
         const { start, end } = getWeekRange(currentWeekOffset);
         const weekDays = [];
@@ -508,22 +619,22 @@
             return `<div class="empty-state">✨ 暂无习惯，请先添加上方习惯</div>`;
         }
 
-        // 表头
         let html = `<div class="calendar-nav">
                         <button id="prevWeekBtn" class="nav-icon">◀ 上周</button>
                         <span style="font-weight:600;">${weekStartStr.slice(5)} ~ ${weekEndStr.slice(5)}</span>
                         <button id="nextWeekBtn" class="nav-icon">下周 ▶</button>
                     </div>`;
-        // 习惯筛选器
         html += `<div class="filter-row" id="weekFilterContainer"></div>`;
-        html += `<div class="week-matrix"><table class="week-table"><thead><tr><th style="width:100px;">习惯</th>`;
+        html += `<div class="week-matrix"><table class="week-table"><thead>`;
+        html += `<th style="width:120px;">习惯 <span style="font-size:0.6rem;">(☰拖拽排序)</span></th>`;
         for (let day of weekDays) {
             const md = `${day.getMonth()+1}/${day.getDate()}`;
             html += `<th>${md}<br><span style="font-size:0.6rem;">${['一','二','三','四','五','六','日'][day.getDay()===0?6:day.getDay()-1]}</span></th>`;
         }
-        html += `</tr></thead><tbody>`;
+        html += `</thead><tbody id="habitSortableBody">`;
         for (let habit of filteredHabits) {
-            html += `<tr><td class="habit-name-cell"><div style="display:flex; justify-content:space-between; align-items:center;"><span>${escapeHtml(habit.name)}</span><button class="delete-habit-btn" data-id="${habit.id}" style="background:none; border:none; font-size:1rem; margin-left:8px;">🗑️</button></div></td>`;
+            html += `<tr class="habit-sort-row" data-habit-id="${habit.id}" style="cursor:grab;">`;
+            html += `<td class="habit-name-cell"><span class="drag-handle">☰</span> ${escapeHtml(habit.name)}<button class="delete-habit-btn" data-id="${habit.id}" style="background:none; border:none; font-size:1rem; margin-left:8px; float:right;">🗑️</button></td>`;
             for (let day of weekDays) {
                 const dateStr = formatYMD(day);
                 const done = getHabitStatus(habit, dateStr);
@@ -536,15 +647,10 @@
         return html;
     }
 
-    // ---------- 月视图 (清晰展示每个习惯每天打卡) ----------
+    // 月视图：同样支持拖拽排序习惯行
     function renderMonthMatrix() {
         const year = currentMonthDate.getFullYear(), month = currentMonthDate.getMonth();
-        const daysArray = getMonthDaysMatrix(year, month);
-        // 只展示当月日期范围内的有效列，但保留所有格子
-        const monthDays = daysArray.filter(d => d.getMonth() === month);
-        const firstDayOffset = daysArray.findIndex(d => d.getMonth() === month);
-        const allDates = daysArray; // 42个格子
-        
+        const allDates = getMonthDaysMatrix(year, month);
         let filteredHabits = (selectedHabitIdForMonth === 'all') ? habits : habits.filter(h => h.id == selectedHabitIdForMonth);
         if (filteredHabits.length === 0) {
             return `<div class="empty-state">📭 暂无习惯，请先添加习惯</div>`;
@@ -556,18 +662,15 @@
                         <button id="nextMonthBtn" class="nav-icon">下月 ▶</button>
                     </div>`;
         html += `<div class="filter-row" id="monthFilterContainer"></div>`;
-        html += `<div class="month-scroll"><table class="month-table"><thead><tr>`;
-        // 表头显示日期 (周一到周日)
+        html += `<div class="month-scroll"><table class="month-table"><thead>`;
         const weekLabels = ['一','二','三','四','五','六','日'];
         for (let i=0; i<7; i++) html += `<th>${weekLabels[i]}</th>`;
-        html += `</tr></thead><tbody>`;
-        // 每个习惯生成一行，每个格子是打卡按钮
+        html += `</thead><tbody id="monthHabitSortableBody">`;
         for (let habit of filteredHabits) {
-            html += `<tr><td colspan="7" style="background:#fafcff; font-weight:600; padding:12px 0 4px 8px; border-bottom:1px solid #eef2f9;">
-                        <div style="display:flex; justify-content:space-between;"><span>🏋️ ${escapeHtml(habit.name)}</span>
-                        <button class="delete-habit-month" data-id="${habit.id}" style="background:none; border:none; font-size:0.8rem; color:#b91c1c;">🗑️删除</button></div>
-                     </td></tr><tr>`;
-            // 绘制7x6网格
+            html += `<tr class="habit-sort-row" data-habit-id="${habit.id}"><td colspan="7" style="background:#fafcff; padding:8px 0 4px 8px; border-bottom:1px solid #eef2f9;">
+                        <div style="display:flex; align-items:center; gap:8px;"><span class="drag-handle">☰</span> <span>🏋️ ${escapeHtml(habit.name)}</span>
+                        <button class="delete-habit-month" data-id="${habit.id}" style="background:none; border:none; font-size:0.8rem; margin-left:auto; color:#b91c1c;">🗑️删除</button></div>
+                      </td></tr><tr class="habit-sort-row-sub" data-habit-id="${habit.id}">`;
             let rowCount = 0;
             for (let i=0; i<allDates.length; i++) {
                 const date = allDates[i];
@@ -576,14 +679,13 @@
                 const dayNum = date.getDate();
                 const done = getHabitStatus(habit, dateStr);
                 const isToday = (dateStr === getTodayStr());
-                let cellStyle = `background:${isCurrentMonth ? '#ffffff' : '#f8fafc'}; border-radius:16px; padding:6px 2px;`;
                 let dotStyle = `width:38px; height:38px; margin:0 auto; border-radius:40px; display:flex; align-items:center; justify-content:center; cursor:pointer; background:${done ? '#2c7a5e30' : '#f1f5f9'}; color:${done ? '#2c7a5e' : '#475569'}; font-weight:bold; ${isToday ? 'border:2px solid #2c5a6e;' : ''}`;
-                html += `<td style="${cellStyle}">
+                html += `<td style="background:${isCurrentMonth ? '#ffffff' : '#f8fafc'}; border-radius:16px; padding:6px 2px;">
                             <div style="font-size:0.65rem; color:${isCurrentMonth ? '#1f3b4c' : '#9aaeb9'};">${dayNum}</div>
                             <div class="month-dot-btn" style="${dotStyle}" data-habit="${habit.id}" data-date="${dateStr}">${done ? '✓' : '○'}</div>
                          </td>`;
                 rowCount++;
-                if (rowCount % 7 === 0 && i !== allDates.length-1) html += `</tr><tr>`;
+                if (rowCount % 7 === 0 && i !== allDates.length-1) html += `</tr><tr class="habit-sort-row-sub" data-habit-id="${habit.id}">`;
             }
             html += `</tr>`;
         }
@@ -591,7 +693,7 @@
         return html;
     }
 
-    // 今日模式简单列表
+    // 今日模式简单列表 (不可拖拽排序，维持原有样式)
     function renderTodayMode() {
         const today = getTodayStr();
         if (habits.length === 0) return `<div class="empty-state">✨ 暂无习惯，添加一个吧</div>`;
@@ -606,18 +708,13 @@
         return html;
     }
 
-    // 待办渲染
+    // 待办渲染 (支持拖拽排序)
     function renderTodos() {
-        const sorted = [...todos].sort((a,b) => {
-            if (!a.deadline && !b.deadline) return b.createdAt - a.createdAt;
-            if (!a.deadline) return 1;
-            if (!b.deadline) return -1;
-            return new Date(a.deadline) - new Date(b.deadline);
-        });
+        const sorted = [...todos].sort((a,b) => (a.order ?? 0) - (b.order ?? 0));
         if (sorted.length === 0) {
             document.getElementById('todoListContainer').innerHTML = '<div class="empty-state">📭 暂无待办，添加一个吧</div>';
         } else {
-            let html = '';
+            let html = '<div id="todoSortableList">';
             sorted.forEach(todo => {
                 let deadlineHtml = '', deadlineClass = '';
                 if (todo.deadline) {
@@ -633,7 +730,8 @@
                     deadlineHtml += ` (${fmt})`;
                 } else deadlineHtml = `⏳ 无期限`;
                 const completedClass = todo.completed ? 'completed-text' : '';
-                html += `<div class="todo-item">
+                html += `<div class="todo-item todo-sort-item" data-todo-id="${todo.id}" style="cursor:grab;">
+                            <span class="drag-handle">☰</span>
                             <input type="checkbox" class="todo-check" data-id="${todo.id}" ${todo.completed ? 'checked' : ''}>
                             <div class="todo-info">
                                 <div class="todo-title ${completedClass}">${escapeHtml(todo.title)}</div>
@@ -642,8 +740,10 @@
                             <button class="delete-todo" data-id="${todo.id}">🗑️</button>
                          </div>`;
             });
+            html += '</div>';
             document.getElementById('todoListContainer').innerHTML = html;
         }
+        // 绑定待办事件
         document.querySelectorAll('.todo-check').forEach(cb => cb.addEventListener('change', (e) => toggleTodoComplete(cb.getAttribute('data-id'))));
         document.querySelectorAll('.delete-todo').forEach(btn => btn.addEventListener('click', () => deleteTodo(btn.getAttribute('data-id'))));
         const remain = todos.filter(t => !t.completed).length;
@@ -654,9 +754,19 @@
         let total = 0;
         habits.forEach(h => { if (h.history) Object.entries(h.history).forEach(([d,v]) => { if(v && d.startsWith(monthPrefix)) total++; }); });
         document.getElementById('monthStat').innerText = total;
+        
+        // 启用待办拖拽
+        const todoContainer = document.getElementById('todoSortableList');
+        if (todoContainer && typeof Sortable !== 'undefined') {
+            new Sortable(todoContainer, {
+                handle: '.drag-handle',
+                animation: 150,
+                onEnd: function() { updateTodosOrderFromDrag(); }
+            });
+        }
     }
 
-    // 动态主内容渲染
+    // 动态主内容渲染 并 绑定习惯拖拽排序
     function renderDynamic() {
         let content = '';
         if (currentTab === 'day') content = renderTodayMode();
@@ -664,7 +774,6 @@
         else content = renderMonthMatrix();
         document.getElementById('dynamicContent').innerHTML = content;
 
-        // 绑定事件
         if (currentTab === 'day') {
             document.querySelectorAll('.habit-btn').forEach(btn => {
                 btn.addEventListener('click', () => toggleHabitDay(btn.getAttribute('data-id'), getTodayStr()));
@@ -687,6 +796,14 @@
             document.querySelectorAll('.delete-habit-btn').forEach(btn => {
                 btn.addEventListener('click', (e) => { e.stopPropagation(); deleteHabit(btn.getAttribute('data-id')); });
             });
+            const tbody = document.getElementById('habitSortableBody');
+            if (tbody && typeof Sortable !== 'undefined') {
+                new Sortable(tbody, {
+                    handle: '.drag-handle',
+                    animation: 150,
+                    onEnd: function() { updateHabitsOrderFromDrag(); }
+                });
+            }
             const prev = document.getElementById('prevWeekBtn');
             const next = document.getElementById('nextWeekBtn');
             if (prev) prev.addEventListener('click', () => { currentWeekOffset--; renderAll(); });
@@ -709,6 +826,14 @@
             document.querySelectorAll('.delete-habit-month').forEach(btn => {
                 btn.addEventListener('click', () => deleteHabit(btn.getAttribute('data-id')));
             });
+            const monthBody = document.getElementById('monthHabitSortableBody');
+            if (monthBody && typeof Sortable !== 'undefined') {
+                new Sortable(monthBody, {
+                    handle: '.drag-handle',
+                    animation: 150,
+                    onEnd: function() { updateHabitsOrderFromDrag(); }
+                });
+            }
             const prevM = document.getElementById('prevMonthBtn');
             const nextM = document.getElementById('nextMonthBtn');
             if (prevM) prevM.addEventListener('click', () => { currentMonthDate.setMonth(currentMonthDate.getMonth()-1); renderAll(); });
@@ -728,13 +853,17 @@
         document.getElementById('displayDate').innerHTML = `${d.getFullYear()}.${d.getMonth()+1}.${d.getDate()} ${weekdays[d.getDay()]}`;
     }
 
-    function saveToLocal() { localStorage.setItem(STORAGE_KEY, JSON.stringify({ habits, todos })); }
+    function saveToLocal() { 
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ habits, todos })); 
+    }
     function loadData() {
         const raw = localStorage.getItem(STORAGE_KEY);
         if (raw) { try { const data = JSON.parse(raw); habits = data.habits || []; todos = data.todos || []; } catch(e){} }
-        if (!habits.length) habits = [ { id: 'h1', name: '晨间冥想', history: {} }, { id: 'h2', name: '阅读', history: {} } ];
-        if (!todos.length) todos = [ { id: 1001, title: '整理周报', completed: false, deadline: null }, { id: 1002, title: '买日用品', completed: false, deadline: new Date(Date.now() + 3*86400000).toISOString() } ];
-        habits.forEach(h => { if (!h.history) h.history = {}; });
+        if (!habits.length) habits = [ { id: 'h1', name: '晨间冥想', history: {}, order: 0 }, { id: 'h2', name: '阅读', history: {}, order: 1 } ];
+        if (!todos.length) todos = [ { id: 1001, title: '整理周报', completed: false, deadline: null, createdAt: Date.now(), order: 0 }, { id: 1002, title: '买日用品', completed: false, deadline: new Date(Date.now() + 3*86400000).toISOString(), order: 1 } ];
+        habits.forEach(h => { if (!h.history) h.history = {}; if (h.order === undefined) h.order = 0; });
+        todos.forEach(t => { if (t.order === undefined) t.order = 0; if (t.deadline === undefined) t.deadline = null; });
+        ensureOrder();
     }
     function escapeHtml(str) { if(!str) return ''; return str.replace(/[&<>]/g, function(m){ if(m==='&') return '&amp;'; if(m==='<') return '&lt;'; if(m==='>') return '&gt;'; return m;}); }
 
